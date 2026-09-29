@@ -108,6 +108,8 @@ extip_dnsname = "myip.opendns.com" --DNS name which returns own IP
 acquire_interval = 300 --Interval for data aquisition
 enr_split_hd_lines = 32 --Number of lines in hexdump-style output before split. Set to 0 to disable. Line length parameters for splitting are not configurable via config file, thus statical configured in python script.
 enr_timeout =  5 --Timout for gracefull shutdown
+enr_workers = 16 --Optional: Number of enrichment worker threads. Default: 16
+enr_max_pending = 1024 --Optional: Max. events waiting for enrichment before reading from madcatlog_fifo pauses. Default: 1024
 enr_output_files = { --Optional: Output in (multiple) files for e.g. multiple filebeat instances. If not configured or empty, output defaults to STDOUT. STDOUT can be configured explicitly by adding "<STDOUT>" to the list.
 --                        "/tmp/log1.txt",
 --                        "/tmp/log2.txt",
