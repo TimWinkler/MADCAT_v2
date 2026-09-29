@@ -115,8 +115,9 @@ ct_syn_dict_lock = threading.Lock()
 # Event-driven action is e.g. required for the Dictonary holding
 # connections and new conntrack entries
 con_dict_evt = threading.Event()
-ct_con_dict_evt = threading.Event()
-ct_syn_dict_evt = threading.Event()
+# Signalled by the conntrack thread after a table snapshot has been parsed completely.
+# GLOBAL_CT_LASTUPDATE is the time taken right before that snapshot was requested.
+ct_update_cond = threading.Condition()
 output_accepted_con_th_firstrun_evt = threading.Event()
 
 ########################## Locks for output ##########################
@@ -191,6 +192,16 @@ def eprint(*args, **kwargs):
 ########################## Fill SYN dictonary with data from corresponding
 
 
+def wait_for_conntrack(event_time):
+    """Block until a conntrack snapshot requested at or after event_time is complete.
+
+    Must be called without holding any of the dictionary locks, otherwise the
+    FIFO reader threads stall for a whole conntrack cycle.
+    """
+    with ct_update_cond:
+        ct_update_cond.wait_for(lambda: GLOBAL_CT_LASTUPDATE >= event_time)
+
+
 def build_syn_dict():
     global syn_dict, syn_dict_lock, GLOBAL_SHUTDOWN, DEF_HEADER_FIFO, DEF_HEADER_FIFO, GLOBAL_HDR_COUNT, GLOBAL_HDR_WARN_COUNT
     logtime = datetime.now().astimezone().isoformat()
@@ -257,7 +268,7 @@ def build_syn_dict():
 
 
 def build_con_dict():
-    global con_dict, con_dict_lock, con_dict_evt, ct_con_dict, ct_con_dict_evt, ct_con_dict_lock, GLOBAL_SHUTDOWN, DEF_CONNECTION_FIFO, DEF_ENABLE_CONNTRACK, DEF_CONNECTION_FIFO, GLOBAL_CON_COUNT, GLOBAL_CON_WARN_COUNT
+    global con_dict, con_dict_lock, con_dict_evt, ct_con_dict, ct_con_dict_lock, GLOBAL_SHUTDOWN, DEF_CONNECTION_FIFO, DEF_ENABLE_CONNTRACK, DEF_CONNECTION_FIFO, GLOBAL_CON_COUNT, GLOBAL_CON_WARN_COUNT
     logtime = datetime.now().astimezone().isoformat()
     confifo = open(DEF_CONNECTION_FIFO, "r")  # open Connection-FiFo
     eprint(logtime + " [PID " + str(os.getpid()) + "]" +
@@ -265,7 +276,6 @@ def build_con_dict():
     while True:  # Reading loop
         conjson = confifo.readline()  # Read JSON output from FiFo. Blocking!
         logtime = datetime.now().astimezone().isoformat()
-        con_dict_lock.acquire()  # Aquire lock on Connection dictonary
 
         try:
             conobj = json.loads(conjson)  # unmarshal JSON from FiFo
@@ -293,7 +303,6 @@ def build_con_dict():
                    str(len(conjson)) +
                    ", data: " +
                    conjson)
-            con_dict_lock.release()
             continue
 
         # Build ID (aka tag) from source address, destination port and source
@@ -302,11 +311,8 @@ def build_con_dict():
             str(conobj.get("dest_port")) + "+" + str(conobj.get("src_port"))
 
         if DEF_ENABLE_CONNTRACK:
-            con_time = conobj.get("unixtime")
-            if GLOBAL_CT_LASTUPDATE < con_time:
-                ct_con_dict_evt.clear()
-                ct_con_dict_evt.wait()
-
+            # wait without holding con_dict_lock, see wait_for_conntrack()
+            wait_for_conntrack(conobj.get("unixtime"))
             ct_con_dict_lock.acquire()
             conobj['ct_status'] = "None"
             for ct_time in list(ct_con_dict.keys()):
@@ -333,6 +339,7 @@ def build_con_dict():
 
             ct_con_dict_lock.release()
 
+        con_dict_lock.acquire()  # Aquire lock on Connection dictonary
         con_dict.update({conid: conobj})  # append Connection to dictonary
 
         con_dict_lock.release()  # release lock
@@ -482,7 +489,7 @@ def output_accepted_con():
 def output_syn_scans():
     global DEF_ENABLE_CONNTRACK, DEF_SYN_TIMEOUT, DEF_SYN_WAIT_PROXY, GLOBAL_SYN_SCAN_COUNT, GLOBAL_CT_LASTUPDATE
     #global syn_scan_dict
-    global syn_dict, syn_dict_lock, ct_syn_dict, ct_syn_dict_lock, output_accepted_con_th_firstrun_evt, ct_syn_dict_evt
+    global syn_dict, syn_dict_lock, ct_syn_dict, ct_syn_dict_lock, output_accepted_con_th_firstrun_evt
 
     logtime = datetime.now().astimezone().isoformat()
     eprint(logtime +
@@ -497,6 +504,15 @@ def output_syn_scans():
     eprint(logtime + " [PID " + str(os.getpid()) + "]" +
            " OUTPUT SYN-SCANS: ...running")
     while True:  # Loop checking for SYNs without connection after syn_timout
+        ct_syn_ids = set()
+        if DEF_ENABLE_CONNTRACK:
+            # Wait (without holding syn_dict_lock) for conntrack data covering the newest SYN,
+            # then work on a snapshot of the conntrack SYN ids.
+            with syn_dict_lock:
+                newest_syn = max((syn.get("unixtime") for syn in syn_dict.values()), default=0)
+            wait_for_conntrack(newest_syn)
+            with ct_syn_dict_lock:
+                ct_syn_ids = set(ct_syn_dict.keys())
         syn_dict_lock.acquire()  # Aquire lock on SYN dictonarys
         for synid in list(
                 syn_dict.keys()):  # Iterate over items in SYN dictonary
@@ -505,13 +521,8 @@ def output_syn_scans():
             # greater than syn_timeout.
             if "ct_status" not in syn_dict[synid].keys():
                 syn_dict[synid].update({"ct_status": "None"})
-            if DEF_ENABLE_CONNTRACK:
-                syn_time = syn_dict.get(synid).get("unixtime")
-                if GLOBAL_CT_LASTUPDATE < syn_time:
-                    ct_syn_dict_evt.clear()
-                    ct_syn_dict_evt.wait()
-                if synid in ct_syn_dict.keys():
-                    syn_dict[synid].update({"ct_status": "Found"})
+            if DEF_ENABLE_CONNTRACK and synid in ct_syn_ids:
+                syn_dict[synid].update({"ct_status": "Found"})
             #eprint(syn_dict.get(synid).get("ct_status") + " synid: " + synid + " @ " + str(ct_syn_dict.keys()))
 
             # 1st line: respect SYN_TIMEOUT if not proxied
@@ -524,7 +535,7 @@ def output_syn_scans():
                 DEF_SYN_TIMEOUT < time.time() and syn_dict.get(synid).get("TCP").get("proxied") == "false") or (
                 syn_dict.get(synid).get("unixtime") +
                     DEF_SYN_WAIT_PROXY < time.time()):
-                if not (DEF_ENABLE_CONNTRACK and synid in ct_syn_dict.keys()):
+                if not (DEF_ENABLE_CONNTRACK and synid in ct_syn_ids):
 
                     output = {}  # Begin new JSON output
                     # Build (pseudo-)Header from IP- and TCP-Header Information
@@ -599,12 +610,10 @@ def drop_privileges(uid_name, gid_name):
 conntrack = list() #XXX
 def build_conntrack_dict():
     global DEF_HOSTADDRESS, DEF_CT_STATUS_GRACE_TIME, GLOBAL_CT_LASTUPDATE, GLOBAL_CT_INTERVAL
-    global ct_con_dict, ct_con_dict_lock, ct_con_dict_evt, ct_syn_dict, ct_syn_dict_lock, ct_syn_dict_evt, conntrack #XXX
+    global ct_con_dict, ct_con_dict_lock, ct_syn_dict, ct_syn_dict_lock, conntrack #XXX
     logtime = datetime.now().astimezone().isoformat()
     eprint(logtime + " [PID " + str(os.getpid()) + "]" +
            " CONNTRACK LOOKUP: Thread started and running")
-    ct_con_dict_evt.clear()
-    ct_syn_dict_evt.clear()
     while(1):
         ct_time = time.time()
         ct_con_dict_lock.acquire()
@@ -636,9 +645,9 @@ def build_conntrack_dict():
 
         # Generate new entry
         ct_con_dict[ct_time] = dict()
-        # save time before calling conntrack to ensure it is lower than the
-        # time of an incoming packet in other threads.
-        GLOBAL_CT_LASTUPDATE = time.time()
+        # ct_time has been taken before calling conntrack, so it is lower than the
+        # time of any packet contained in this snapshot. It is published as
+        # GLOBAL_CT_LASTUPDATE only after the snapshot has been parsed (see below).
         try:
             conntrack = list(
                 str(
@@ -752,8 +761,9 @@ def build_conntrack_dict():
 
         ct_syn_dict_lock.release()
         ct_con_dict_lock.release()
-        ct_con_dict_evt.set()
-        ct_syn_dict_evt.set()
+        with ct_update_cond:  # snapshot complete: wake up threads waiting for it
+            GLOBAL_CT_LASTUPDATE = ct_time
+            ct_update_cond.notify_all()
 
         time.sleep(GLOBAL_CT_INTERVAL)
     return

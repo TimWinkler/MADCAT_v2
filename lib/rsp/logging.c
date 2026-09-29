@@ -149,8 +149,7 @@ void json_out(struct json_data_t* jd, uintptr_t id)
     char* output = dict_dumpstr(json_dict(false));
     if(strlen(output) > 2) { //do not print empty JSON-Objects
         sem_timedwait(consem, &sem_timeout); //Acquire lock for output
-        fprintf(confifo, "%s\n", output); //print json output for further analysis
-        fflush(confifo);
+        fifo_writeline(confifo, output, FIFO_WRITE_TIMEOUT_MS); //print json output for further analysis
         sem_post(consem); //release lock
         fprintf(stdout,"{\"CONNECTION\": %s}\n", output); //print json output for logging
         fflush(stdout);

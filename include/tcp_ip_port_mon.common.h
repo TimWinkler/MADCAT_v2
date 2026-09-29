@@ -53,6 +53,8 @@ extern int listner_pid; //PID of the Child doing the TCP Connection handling. Gl
 extern sem_t *hdrsem; //Semaphore for named pipe containing TCP/IP data
 extern sem_t *consem; //Semaphore for named pipe containing connection data
 extern FILE* confifo; //FILE* confifo is globally defined to be reachabel for proxy-childs and listner-childs and signal handlers
+extern char header_fifo_path[]; //Path of header FIFO, configurable via "header_fifo"
+extern char connection_fifo_path[]; //Path of connection FIFO, configurable via "connection_fifo"
 extern FILE* hdrfifo; //FILE* confifo is globally defined to be reachabel for pcap-childs and signal handlers
 extern int openfd; //Socket FD is globally defined to be reachabel for listner-childs and signal handlers
 extern pcap_t *handle; //pcap Session handle

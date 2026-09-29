@@ -550,3 +550,69 @@ char* itoprotostr(uint8_t proto_no, const char* suffix)
     
     return proto_str;
 }
+
+int fifo_prepare(FILE* fifo)
+{
+    int fd = fileno(fifo);
+    int flags = fcntl(fd, F_GETFL);
+    if (flags == -1 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+        return -1;
+    fcntl(fd, F_SETPIPE_SZ, FIFO_PIPE_SIZE); //best effort, keeps default size if not permitted
+    return 0;
+}
+
+static long long int monotonic_ms()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long int) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+int fifo_writeline(FILE* fifo, const char* line, int timeout_ms)
+{
+    static long int dropped = 0; //per process
+    int fd = fileno(fifo);
+    size_t len = strlen(line) + 1;
+    char* buf = malloc(len);
+    if (buf == NULL)
+        return -1;
+    memcpy(buf, line, len - 1);
+    buf[len - 1] = '\n';
+
+    long long int deadline = monotonic_ms() + timeout_ms;
+    int capacity = fcntl(fd, F_GETPIPE_SZ);
+    size_t written = 0;
+    while (written < len) {
+        int queued = 0;
+        //Wait until the whole (remaining) line fits, unless it can never fit into the pipe at all.
+        bool fits = capacity <= 0 || len > (size_t) capacity ||
+                    (ioctl(fd, FIONREAD, &queued) == 0 && (size_t) (capacity - queued) >= len - written);
+        if (fits) {
+            ssize_t n = write(fd, buf + written, len - written);
+            if (n > 0) {
+                written += n;
+                continue;
+            }
+            if (n == -1 && errno != EAGAIN && errno != EINTR)
+                break;
+        }
+        long long int remaining = deadline - monotonic_ms();
+        if (remaining <= 0)
+            break;
+        struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+        poll(&pfd, 1, remaining < 10 ? (int) remaining : 10); //POLLOUT signals any room, so re-check the fill level regularly
+    }
+    free(buf);
+
+    if (written < len) {
+        dropped++;
+        if (dropped == 1 || dropped % 100 == 0) {
+            char log_time[64] = "";
+            time_str(NULL, 0, log_time, sizeof(log_time));
+            fprintf(stderr, "%s [PID %d] WARNING: FIFO reader too slow or missing, %ld event(s) dropped so far%s.\n",
+                    log_time, getpid(), dropped, written > 0 ? " (last one truncated)" : "");
+        }
+        return -1;
+    }
+    return 0;
+}

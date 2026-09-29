@@ -37,6 +37,16 @@ This file is part of MADCAT, the Mass Attack Detection Acceptance Tool.
 #define MADCAT_HELPER_H
 
 #include "madcat.common.h"
+#include <poll.h>
+#include <sys/ioctl.h>
+
+#ifndef F_SETPIPE_SZ //only defined with _GNU_SOURCE, values are Linux ABI
+#define F_SETPIPE_SZ 1031
+#define F_GETPIPE_SZ 1032
+#endif
+
+#define FIFO_WRITE_TIMEOUT_MS 1000 //Max. time to wait for a FIFO reader to make room before an event is dropped
+#define FIFO_PIPE_SIZE (1024*1024) //Requested pipe buffer size for output FIFOs (capped by /proc/sys/fs/pipe-max-size)
 
 //MADCAT HELPER
 
@@ -233,5 +243,34 @@ const char* get_config_opt(lua_State* L, char* name); //Returns configuration it
  *
  */
 char* itoprotostr(uint8_t proto_no, const char* suffix);
+
+/**
+  * \brief Prepares an output FIFO for fifo_writeline()
+  *
+  *     Switches the FIFO to non-blocking mode and enlarges its pipe buffer,
+  *     so writers never block indefinitely if no reader is present.
+  *
+  * \param fifo FILE pointer of an opened FIFO
+  * \return 0 on success, -1 on error
+  *
+  */
+int fifo_prepare(FILE* fifo);
+
+/**
+  * \brief Writes one line to a FIFO without blocking forever
+  *
+  *     Appends a newline to line and writes it to fifo, bypassing stdio buffering.
+  *     A line is only written if it fits into the pipe buffer as a whole, so a
+  *     reader never sees a truncated line. If there is not enough room within
+  *     timeout_ms (e.g. the reader died or is too slow), the line is dropped.
+  *     Lines larger than the whole pipe buffer are written in parts.
+  *
+  * \param fifo FILE pointer of a FIFO prepared by fifo_prepare()
+  * \param line 0-terminated string without trailing newline
+  * \param timeout_ms maximum time to wait for room in the pipe
+  * \return 0 if written, -1 if dropped
+  *
+  */
+int fifo_writeline(FILE* fifo, const char* line, int timeout_ms);
 
 #endif

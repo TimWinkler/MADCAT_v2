@@ -20,7 +20,7 @@ Status markers: `[ ]` open, `[x]` done.
 
 ## 1. Robustness / Correctness
 
-- [ ] **TCP sensor stalls when nobody reads its FIFOs.**
+- [x] **TCP sensor stalls when nobody reads its FIFOs.**
   Observed: without a reader on `/tmp/connect_json.tpm` / `/tmp/header_json.tpm`, the sensor stopped
   accepting connections after ~500 flows and left ~385 hung processes. In production this means the
   sensor goes silent whenever `tcp_ip_port_mon_postprocessor.py` dies.
@@ -29,13 +29,13 @@ Status markers: `[ ]` open, `[x]` done.
   missing reader; supervise the postprocessor (systemd `Requires=`/`BindsTo=`).
   Code: [bin/tcp_ip_port_mon.c](bin/tcp_ip_port_mon.c) (FIFO setup), [lib/tcp_ip_port_mon.worker.c](lib/tcp_ip_port_mon.worker.c) (output).
 
-- [ ] **Watchdog "deadlock breaker" never fires.**
+- [x] **Watchdog "deadlock breaker" never fires.**
   It only posts the semaphore when `sem_getvalue` is negative, which Linux never returns (the code's own
   comment says so). The effective protection is the 1 s `sem_timedwait` timeout. Either remove the dead
   code or replace it with a working mechanism.
   Code: [bin/tcp_ip_port_mon.c](bin/tcp_ip_port_mon.c) (watchdog loop, semaphore section).
 
-- [ ] **FIFO paths are defined twice.**
+- [x] **FIFO paths are defined twice.**
   C hardcodes `HEADER_FIFO` / `CONNECT_FIFO` in [include/tcp_ip_port_mon.helper.h](include/tcp_ip_port_mon.helper.h);
   the postprocessor reads `header_fifo` / `connection_fifo` from `config.lua`. Changing only the config
   silently breaks the pipeline. Make the C side read the same config keys (keeping the defines as defaults).
@@ -47,24 +47,28 @@ Status markers: `[ ]` open, `[x]` done.
   Code: [bin/tcp_ip_port_mon.c:379](bin/tcp_ip_port_mon.c#L379), [lib/icmp_mon.helper.c:72](lib/icmp_mon.helper.c#L72).
   Compiling with `-Wall -Wextra` in CI would help catch this class of error.
 
-- [ ] **Possible stall in postprocessor with conntrack enabled (to investigate).**
+- [x] **Stall in postprocessor with conntrack enabled (confirmed: ~20 SYNs queued per 3 s conntrack run).**
   `output_syn_scans` waits on `ct_syn_dict_evt` while holding `syn_dict_lock`, which blocks
   `build_syn_dict` (and therefore the header FIFO reader) until the conntrack thread updates.
   Code: [bin/tcp_ip_port_mon_postprocessor.py](bin/tcp_ip_port_mon_postprocessor.py) (`output_syn_scans`).
 
-- [ ] **Inconsistent fields between proxied and non-proxied UDP connections.**
+- [x] **Inconsistent fields between proxied and non-proxied UDP connections.**
   In the proxied branch `start`/`end` are filled with the Unix timestamp string (copied with
   `strlen(log_time)` as length) and `first_dgram_len` is the payload length; in the non-proxied branch
   `start`/`end` are the human-readable time and `first_dgram_len` is the full packet length.
   Code: [lib/udp_ip_port_mon.worker.c](lib/udp_ip_port_mon.worker.c).
 
-- [ ] **Listen backlog of 5 is low for a mass-scan sensor.**
+- [x] **Listen backlog of 5 is low for a mass-scan sensor.**
   `listen(listenfd, 5)` in [bin/tcp_ip_port_mon.c](bin/tcp_ip_port_mon.c). Raise it (e.g. `SOMAXCONN`)
   or make it configurable.
 
-- [ ] **Unchecked allocations and hard exits in the UDP worker.**
+- [x] **Unchecked allocations and hard exits in the UDP worker.**
   `strncpy(malloc(...), ...)` patterns never check `malloc`; socket creation failure calls `exit(1)`
   from inside the worker. See [lib/udp_ip_port_mon.worker.c](lib/udp_ip_port_mon.worker.c).
+
+- [x] **UDP proxy reflected the client's own datagrams when the backend is local.**
+  Connection IDs are direction-independent, so the raw socket's view of our own proxy->backend packet
+  matched the backend ID and was forwarded to the client. Direction is now decided by the real source socket.
 
 ## 2. Performance
 

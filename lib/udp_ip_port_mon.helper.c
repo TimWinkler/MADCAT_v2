@@ -272,7 +272,7 @@ char* uc_strlid(udpcon_id_t* id, char* out_25B)
 
 struct udpcon_data_node_t* uc_push(struct udpcon_data_t* uc, udpcon_id_t id)
 {
-    struct udpcon_data_node_t* uc_node = malloc(sizeof(struct udpcon_data_node_t));
+    struct udpcon_data_node_t* uc_node = CHECK(malloc(sizeof(struct udpcon_data_node_t)), != NULL);
 
     //IDs
     memcpy(&(uc_node->id_fromclient), &id, sizeof(uc_node->id_fromclient));

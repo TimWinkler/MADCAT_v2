@@ -233,8 +233,7 @@ long int worker_tcp(const char* dst_addr, const int dest_port, const char* src_a
     char* output = dict_dumpstr(json_dict(false));
     if(strlen(output) > 2) { //do not print empty JSON-Objects
         sem_timedwait(consem, &sem_timeout); //Acquire lock for output
-        fprintf(confifo, "%s\n", output); //print json output for further analysis
-        fflush(confifo);
+        fifo_writeline(confifo, output, FIFO_WRITE_TIMEOUT_MS); //print json output for further analysis
         sem_post(consem); //release lock
         fprintf(stdout,"{\"CONNECTION\": %s}\n", output); //print json output for logging
         fflush(stdout);
