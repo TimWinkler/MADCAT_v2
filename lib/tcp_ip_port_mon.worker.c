@@ -116,6 +116,7 @@ long int worker_tcp(const char* dst_addr, const int dest_port, const char* src_a
     //initialize beginning time and time now for first run
     gettimeofday(&begin, NULL);
     bool firstpacket = true;
+    bool peer_closed = false; //client sent FIN or connection failed, nothing more to read
     while(1) { //receiving loop
         //get current time
         gettimeofday(&now, NULL);  //now is the receiving time
@@ -134,11 +135,22 @@ long int worker_tcp(const char* dst_addr, const int dest_port, const char* src_a
             size_exceeded = true;
         }
 
+        //Sleep until data arrives or the idle timeout expires, instead of polling every 50ms
+        int wait_ms = (int) ((timeout - timediff) * 1000) + 1;
+        if (peer_closed) { //no more data can arrive, hold the connection until the idle timeout like before
+            poll(NULL, 0, wait_ms);
+            continue;
+        }
+        struct pollfd pfd = { .fd = s, .events = POLLIN };
+        if (poll(&pfd, 1, wait_ms) <= 0) //timeout or interrupted
+            continue;
+
         memset(chunk,0, CHUNK_SIZE);    //clear the variable
         size_recv =  recv(s, chunk, CHUNK_SIZE, 0);
         if(size_recv <= 0) {
-            //if nothing was received then we want to wait a little before trying again, 0.1 seconds
-            usleep(50000);
+            //FIN (0) or error like ECONNRESET: the socket stays readable, so stop polling it
+            if (size_recv == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+                peer_closed = true;
         } else {
             //reset beginning time
             gettimeofday(&begin, NULL);

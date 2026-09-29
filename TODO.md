@@ -72,21 +72,28 @@ Status markers: `[ ]` open, `[x]` done.
 
 ## 2. Performance
 
-- [ ] **Postprocessor join is O(connections × SYNs) while holding both locks.**
+- [x] **Postprocessor join is O(connections × SYNs) while holding both locks.**
   `output_accepted_con` loops over every SYN key for every connection. The exact-match case can be a
   direct dict lookup (`syn_dict.get(conid)`); only the best-guess path needs a scan (and could use a
   secondary index on `src_ip_destport`).
   Code: [bin/tcp_ip_port_mon_postprocessor.py](bin/tcp_ip_port_mon_postprocessor.py) (`output_accepted_con`).
 
-- [ ] **Enrichment processor spawns one thread per event.**
+- [x] **Enrichment processor spawns one thread per event.**
   Unbounded thread count under load and no ordering guarantee. Use a bounded worker pool
   (`concurrent.futures.ThreadPoolExecutor`) or a queue with a fixed number of workers.
   Code: [bin/enrichment_processor.py](bin/enrichment_processor.py) (`enrich`).
 
-- [ ] **TCP worker busy-polls with `usleep(50000)`.**
+- [x] **TCP worker busy-polls with `usleep(50000)`.**
   Replace the non-blocking `recv` + sleep loop with `poll()` and a timeout. Lower CPU/latency, and
   removes the 50 ms timing quantization (see section 3).
   Code: [lib/tcp_ip_port_mon.worker.c](lib/tcp_ip_port_mon.worker.c).
+
+- [ ] **UDP/ICMP/RAW sensors block if the enrichment processor stops reading.**
+  They write events to stdout, which `run_madcat.sh` redirects into `/tmp/logs.erm`. Same failure mode as
+  the TCP FIFO stall (fixed there with `fifo_writeline()`); needs the same treatment for stdout.
+
+- [x] **Config keys compared as substrings in the Python processors.**
+  `if key in "enr_timeout"` matched any key that is a substring; now exact comparison.
 
 ## 3. Detectability (sensor fingerprint)
 

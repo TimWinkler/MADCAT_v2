@@ -346,6 +346,122 @@ def build_con_dict():
         con_dict_evt.set()  # indicate new entry in dictonary
     return
 
+########################## Matching logic (pure functions, see tests/python)
+
+
+def tag_prefix(tag):
+    """Part of a SYN/connection tag without the source port: "<src_ip>_<dest_port>"."""
+    return tag.split('+')[0]
+
+
+def find_syn(conid, con, syn_dict, now, best_guess_index=None,
+             best_guess=False, best_guess_timeout=0):
+    """Find the SYN belonging to connection conid.
+
+    Returns (synid, is_best_guess) or (None, False). An exact tag match is
+    always preferred. If best_guess is enabled and the connection is older
+    than best_guess_timeout, a SYN with the same source IP and destination
+    port (source port may have been changed by NAT) is accepted.
+    best_guess_index maps tag_prefix -> list of synids (oldest first).
+    """
+    if conid in syn_dict:
+        return conid, False
+    if best_guess and best_guess_index is not None \
+            and con.get("unixtime") + best_guess_timeout < now:
+        candidates = best_guess_index.get(tag_prefix(conid))
+        if candidates:
+            return candidates[0], True
+    return None, False
+
+
+def build_best_guess_index(syn_dict):
+    """Map tag_prefix -> list of synids in insertion (arrival) order."""
+    index = {}
+    for synid in syn_dict:
+        index.setdefault(tag_prefix(synid), []).append(synid)
+    return index
+
+
+def no_syn_due(con, now, con_wait, syn_timeout, syn_empty_queue, syn_dict_len):
+    """True if a connection without SYN should be reported as "no_syn" now."""
+    return con.get("unixtime") + con_wait + syn_timeout < now \
+        and not (syn_empty_queue and syn_dict_len != 0)
+
+
+def syn_scan_due(syn, now, syn_timeout, syn_wait_proxy):
+    """True if a SYN without connection should be reported as "syn_scan" now."""
+    return (syn.get("unixtime") + syn_timeout < now
+            and syn.get("TCP").get("proxied") == "false") \
+        or syn.get("unixtime") + syn_wait_proxy < now
+
+
+def flow_event(con, syn, best_guess, report_best_guess):
+    """Connection with its matching SYN: complete 3-way handshake."""
+    output = {"origin": "MADCAT",
+              "timestamp": con.get("timestamp"),
+              "src_ip": con.get("src_ip"),
+              # Take src_port from SYN, in case of a best_guess match it is the true value.
+              "src_port": syn.get("TCP").get("src_port"),
+              "dest_ip": con.get("dest_ip"),
+              "dest_port": con.get("dest_port"),
+              "proto": con.get("proto"),
+              "event_type": con.get("event_type"),
+              "unixtime": con.get("unixtime"),
+              "FLOW": con.get("FLOW"),
+              "IP": syn.get("IP"),
+              "TCP": syn.get("TCP"),
+              "ct_status": con.get("ct_status"),
+              }
+    if report_best_guess:
+        output.update({"best_guess_match": best_guess, })
+    return output
+
+
+def no_syn_event(con):
+    """Connection whose SYN has not been seen."""
+    # src_ip and dest_ip are copied to "IP" to preserve them if an
+    # enrichment is done (enrichment processor)
+    return {"origin": "MADCAT",
+            "timestamp": con.get("timestamp"),
+            "src_ip": con.get("src_ip"),
+            "src_port": con.get("src_port"),
+            "dest_ip": con.get("dest_ip"),
+            "dest_port": con.get("dest_port"),
+            "proto": con.get("proto"),
+            "event_type": "no_syn",
+            "unixtime": con.get("unixtime"),
+            "FLOW": con.get("FLOW"),
+            "IP": {
+                "src_addr": con.get("src_ip"),
+                "dest_addr": con.get("dest_ip")
+            },
+            "ct_status": con.get("ct_status"),
+            }
+
+
+def syn_scan_event(syn):
+    """SYN that never led to a connection."""
+    return {"origin": "MADCAT",
+            "timestamp": syn.get("timestamp"),
+            "src_ip": syn.get("IP").get("src_addr"),
+            "src_port": syn.get("TCP").get("src_port"),
+            "dest_ip": syn.get("IP").get("dest_addr"),
+            "dest_port": syn.get("TCP").get("dest_port"),
+            "proto": "TCP",
+            "event_type": "syn_scan",
+            "unixtime": syn.get("unixtime"),
+            "IP": syn.get("IP"),
+            "TCP": syn.get("TCP"),
+            "ct_status": syn.get("ct_status")}
+
+
+def print_event(output):
+    stdout_lock.acquire()
+    print(json.dumps(output))  # Marshal JSON and print to STDOUT
+    sys.stdout.flush()
+    stdout_lock.release()
+
+
 ########################## Print connections including their SYNs (if feas
 
 
@@ -368,113 +484,28 @@ def output_accepted_con():
         con_dict_evt.wait()  # Wait for new entry in con_dict
         con_dict_evt.clear()  # Indicate event has been seen
         while len(con_dict) > 0:  # Repeat till every connection has been processed
-            logtime = datetime.now().astimezone().isoformat()
             con_dict_lock.acquire()  # Aquire Locks for Connection and...
             syn_dict_lock.acquire()  # Lock SYN dictonary
-            con_dict_keys = list(con_dict.keys())  # Snapshot keys
-            syn_dict_keys = list(syn_dict.keys())  # Snapshot keys
-            # eprint("output_accept_con") #DEBUG
-            for conid in con_dict_keys:  # Iterate over connections
-                found = False  # Set boolean, that a match between SYN and Connection has been found to false in the beginning
-                # Moved downwards for speedup
-                for synid in syn_dict_keys:  # Iterate over SYNs and...
-                    # for synid in syn_dict: #Debug: Provoke "RuntimeError: dictionary changed size during iteration" for error handling test
-                    # Try a best guess match w/o matching source port (NAT!),
-                    # if SYN has not been found if 2x DEF_CON_WAIT is over.
-                    best_guess = False
-                    try:  # conid may have already been matched and was therefore deleted.
-                        if (DEF_BEST_GUESS and con_dict.get(conid).get(
-                                "unixtime") + DEF_BEST_GUESS_TIMEOUT < time.time()):
-                            if (conid.split('+')[0] == synid.split('+')[0]):
-                                best_guess = True
-                    except BaseException:
-                        pass
-                    # ...search for matching tag (aka. id)
-                    if (conid == synid or best_guess) and not found:
-                        # complete JSON output
-                        found = True  # if a match has been made, set found to true
-                        # Combine connection information and Information from SYN (e.g. TCP/IP Headers) to one JSON Object. Set connection.type to "accept",
-                        # to indicate, that a complete connection (full 3-Way
-                        # Handshake) has been made and a TCP-Stream might have
-                        # been recorded
-                        output = {}  # begin new JSON output
-                        output.update({"origin": "MADCAT",
-                                       "timestamp": con_dict.get(conid).get("timestamp"),
-                                       "src_ip": con_dict.get(conid).get("src_ip"),
-                                       # Take src_port from syn_dict, in case
-                                       # of a best_guess match it is the true
-                                       # value.
-                                       "src_port": syn_dict.get(synid).get("TCP").get("src_port"),
-                                       "dest_ip": con_dict.get(conid).get("dest_ip"),
-                                       "dest_port": con_dict.get(conid).get("dest_port"),
-                                       "proto": con_dict.get(conid).get("proto"),
-                                       "event_type": con_dict.get(conid).get("event_type"),
-                                       "unixtime": con_dict.get(conid).get("unixtime"),
-                                       "FLOW": con_dict.get(conid).get("FLOW"),
-                                       "IP": syn_dict.get(synid).get("IP"),
-                                       "TCP": syn_dict.get(synid).get("TCP"),
-                                       "ct_status": con_dict.get(conid).get("ct_status"),
-                                       })
-                        if DEF_BEST_GUESS:
-                            output.update({"best_guess_match": best_guess, })
-                        stdout_lock.acquire()
-                        # Marshal JSON and print to STDOUT
-                        print(json.dumps(output))
-                        sys.stdout.flush()
-                        stdout_lock.release()
-                        # Delete Matched connection and ...
-                        del con_dict[conid]
-                        del syn_dict[synid]  # ...SYN from dictonarys
-                        GLOBAL_FLOW_COUNT += 1
-                        continue  # Go to next entry in SYN dictonary
-
-                # Print Connection without matching SYN. If they appear, it might be a problem with timouts and timing.
-                # A corresponding "connection.type" : "syn_scan" (really) SHOULD exist.
-                # These connections are identified by the "header" : "no_syn" tag.
-                # 1st line: Only not found cons are processed and to prevent false "not_syns"s: During Shutdown no "no_syns" are put out
-                # 2nd line: Wait a minimum of DEF_CON_WAIT + DEF_SYN_TIMOUT before processing connection w/o SYN to ensure SYN is really not present.
-                # 3rd line: Under the prequisite that DEF_SYN_EMPTY_QUEUE [D] is set to true do process only [P] if syn_dict is empty [E] (e.g. it is filled [F] -> len(syn_dict) != 0) as follows:
-                    #   D       E   not E = F       D and F     not (D and F) = P
-                    #
-                    #   0       0       1           0               1
-                    #   0       1       0           0               1
-                    #   1       0       1           1               0
-                    #   1       1       0           0               1
-                    #
-                    #   P = not (DEF_SYN_EMPTY_QUEUE and len(syn_dict) != 0
-                if ((not found) and (not GLOBAL_SHUTDOWN)
-                        and con_dict.get(conid).get("unixtime") + DEF_CON_WAIT + DEF_SYN_TIMEOUT < time.time()) \
-                        and (not (DEF_SYN_EMPTY_QUEUE and len(syn_dict) != 0)):
-
-                    # "incomplete" JSON output
-                    output = {}  # Begin "incomplete"JSON output
-                    # Compose JSON object, containing only the connection data and the "no_syn" tag event_type
-                    # src_ip and dest_ip are copied to "IP" to preserve them if
-                    # an enrichment ist done (enrichment processor)
-
-                    output.update({"origin": "MADCAT",
-                                   "timestamp": con_dict.get(conid).get("timestamp"),
-                                   "src_ip": con_dict.get(conid).get("src_ip"),
-                                   "src_port": con_dict.get(conid).get("src_port"),
-                                   "dest_ip": con_dict.get(conid).get("dest_ip"),
-                                   "dest_port": con_dict.get(conid).get("dest_port"),
-                                   "proto": con_dict.get(conid).get("proto"),
-                                   "event_type": "no_syn",
-                                   "unixtime": con_dict.get(conid).get("unixtime"),
-                                   "FLOW": con_dict.get(conid).get("FLOW"),
-                                   "IP": {
-                                       "src_addr": con_dict.get(conid).get("src_ip"),
-                                       "dest_addr": con_dict.get(conid).get("dest_ip")
-                                   },
-                                   "ct_status": con_dict.get(conid).get("ct_status"),
-                                   })
-
-                    stdout_lock.acquire()
-                    # Marshal JSON and print to STDOUT
-                    print(json.dumps(output))
-                    sys.stdout.flush()
-                    stdout_lock.release()
-                    logtime = datetime.now().astimezone().isoformat()
+            now = time.time()
+            # Exact matches are dictionary lookups; only best guess needs an index over all SYNs
+            bg_index = build_best_guess_index(syn_dict) if DEF_BEST_GUESS else None
+            for conid in list(con_dict.keys()):
+                con = con_dict[conid]
+                synid, best_guess = find_syn(conid, con, syn_dict, now, bg_index,
+                                             DEF_BEST_GUESS, DEF_BEST_GUESS_TIMEOUT)
+                if synid is not None:
+                    # Complete connection (full 3-Way Handshake), a TCP-Stream might have been recorded
+                    print_event(flow_event(con, syn_dict[synid], best_guess, DEF_BEST_GUESS))
+                    del con_dict[conid]  # Delete matched connection and SYN
+                    del syn_dict[synid]
+                    if bg_index is not None:
+                        bg_index[tag_prefix(synid)].remove(synid)
+                    GLOBAL_FLOW_COUNT += 1
+                # Connection without matching SYN. If they appear, it might be a problem with timouts and timing.
+                # During shutdown no "no_syn"s are put out, because no new SYNs are read anymore.
+                elif not GLOBAL_SHUTDOWN and no_syn_due(con, now, DEF_CON_WAIT, DEF_SYN_TIMEOUT,
+                                                        DEF_SYN_EMPTY_QUEUE, len(syn_dict)):
+                    print_event(no_syn_event(con))
                     GLOBAL_NO_SYN_COUNT += 1
                     del con_dict[conid]  # Delete Un-Matched connection
             con_dict_lock.release()  # Release locks
@@ -525,41 +556,13 @@ def output_syn_scans():
                 syn_dict[synid].update({"ct_status": "Found"})
             #eprint(syn_dict.get(synid).get("ct_status") + " synid: " + synid + " @ " + str(ct_syn_dict.keys()))
 
-            # 1st line: respect SYN_TIMEOUT if not proxied
-            # 2nd line: else respect SYN_WAIT_PROXY
-            # 3rd line: Under the prequisite, that Conntrack is enabled only
-            # process if synid is not in ct_syn_dict.keys(), thus connection is
-            # no longer active.
-            if (
-                syn_dict.get(synid).get("unixtime") +
-                DEF_SYN_TIMEOUT < time.time() and syn_dict.get(synid).get("TCP").get("proxied") == "false") or (
-                syn_dict.get(synid).get("unixtime") +
-                    DEF_SYN_WAIT_PROXY < time.time()):
-                if not (DEF_ENABLE_CONNTRACK and synid in ct_syn_ids):
-
-                    output = {}  # Begin new JSON output
-                    # Build (pseudo-)Header from IP- and TCP-Header Information
-                    # and append IP- and TCP-Header information
-                    output.update({"origin": "MADCAT",
-                                   "timestamp": syn_dict.get(synid).get("timestamp"),
-                                   "src_ip": syn_dict.get(synid).get("IP").get("src_addr"),
-                                   "src_port": syn_dict.get(synid).get("TCP").get("src_port"),
-                                   "dest_ip": syn_dict.get(synid).get("IP").get("dest_addr"),
-                                   "dest_port": syn_dict.get(synid).get("TCP").get("dest_port"),
-                                   "proto": "TCP",
-                                   "event_type": "syn_scan",
-                                   "unixtime": syn_dict.get(synid).get("unixtime"),
-                                   "IP": syn_dict.get(synid).get("IP"),
-                                   "TCP": syn_dict.get(synid).get("TCP"),
-                                   "ct_status": syn_dict.get(synid).get("ct_status")})
-                    stdout_lock.acquire()
-                    # Marshal JSON and print to STDOUT
-                    print(json.dumps(output))
-                    sys.stdout.flush()
-                    stdout_lock.release()
-                    logtime = datetime.now().astimezone().isoformat()
-                    del syn_dict[synid]  # Delete outdated SYN from dictonary
-                    GLOBAL_SYN_SCAN_COUNT += 1
+            # Report after SYN_TIMEOUT (not proxied) or SYN_WAIT_PROXY; with conntrack
+            # only once the connection is no longer in the conntrack table.
+            if syn_scan_due(syn_dict[synid], time.time(), DEF_SYN_TIMEOUT, DEF_SYN_WAIT_PROXY) \
+                    and not (DEF_ENABLE_CONNTRACK and synid in ct_syn_ids):
+                print_event(syn_scan_event(syn_dict[synid]))
+                del syn_dict[synid]  # Delete outdated SYN from dictonary
+                GLOBAL_SYN_SCAN_COUNT += 1
 
         syn_dict_lock.release()  # release locks
         time.sleep(1)  # Iterate every second to recognize timed out SYNs
@@ -859,43 +862,43 @@ def main(argv):
                     value = value_list['Number']['n']
                 else:
                     value = 0
-            if key in "hostaddress":
+            if key == "hostaddress":
                 DEF_HOSTADDRESS = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "con_wait":
+            if key == "con_wait":
                 DEF_CON_WAIT = int(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "syn_timeout":
+            if key == "syn_timeout":
                 DEF_SYN_TIMEOUT = int(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "syn_wait_proxy":
+            if key == "syn_wait_proxy":
                 DEF_SYN_WAIT_PROXY = int(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "syn_empty_queue":
+            if key == "syn_empty_queue":
                 DEF_SYN_EMPTY_QUEUE = bool(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "header_fifo":
+            if key == "header_fifo":
                 DEF_HEADER_FIFO = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "connection_fifo":
+            if key == "connection_fifo":
                 DEF_CONNECTION_FIFO = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "user":
+            if key == "user":
                 DEF_USER = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "group":
+            if key == "group":
                 DEF_GROUP = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "best_guess":
+            if key == "best_guess":
                 DEF_BEST_GUESS = bool(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "best_guess_timeout":
+            if key == "best_guess_timeout":
                 DEF_BEST_GUESS_TIMEOUT = int(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "enable_conntrack":
+            if key == "enable_conntrack":
                 DEF_ENABLE_CONNTRACK = bool(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "ct_status_grace_time":
+            if key == "ct_status_grace_time":
                 DEF_CT_STATUS_GRACE_TIME = int(value)
                 eprint("\t" + key + " = " + str(value))
 

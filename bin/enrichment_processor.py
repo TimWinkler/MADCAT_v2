@@ -47,6 +47,8 @@ import threading
 import random
 import string
 import json
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 from luaparser import ast, astnodes
 
 #Import IP Server Client:
@@ -75,6 +77,10 @@ DEF_LINE_LENGTH_STR = 32
 
 # Timeout for gracefull shutdown
 DEF_TIMEOUT = 0.1
+# Number of enrichment worker threads (enrichments like backend_id may block)
+DEF_ENR_WORKERS = 16
+# Maximum number of events waiting for enrichment before reading from the FIFO pauses
+DEF_ENR_MAX_PENDING = 1024
 # User and Group to drop priviliges to.
 DEF_USER = "madcat"
 DEF_GROUP = "madcat"
@@ -375,6 +381,8 @@ def enrich():
            " Reading from FIFO: " + DEF_MADCATLOG_FIFO)
  
     random.seed(time.time())
+    pool = ThreadPoolExecutor(max_workers=DEF_ENR_WORKERS, thread_name_prefix="enrich")
+    pending = threading.BoundedSemaphore(DEF_ENR_MAX_PENDING)
     while True:
         # Read Log from fifo
         logline = logs.readline()
@@ -405,11 +413,24 @@ def enrich():
                    logline)
             continue
        
-        #Parallel enrichment in separate threads, because ip_server querys/updates are blocking
-        enrich_child_th = threading.Thread(target=enrich_child, args=(json_dict_list,), daemon=True)
-        enrich_child_th.start()
+        # Parallel enrichment in a bounded worker pool, because ip_server querys/updates are blocking.
+        # If too many events are pending, stop reading the FIFO (backpressure) instead of growing without limit.
+        pending.acquire()
+        pool.submit(enrich_worker, json_dict_list, pending)
 
     return
+
+def enrich_worker(json_dict_list, pending):
+    """Pool task: enrich one event and release its pending slot."""
+    try:
+        enrich_child(json_dict_list)
+    except BaseException:
+        # Errors *shall* be visible (see enrich_child), the pool would swallow them otherwise
+        eprint(datetime.now().astimezone().isoformat() + " [PID " + str(os.getpid()) + "]" +
+               " ERROR: Enrichment failed for event " + str(json_dict_list) + "\n" + traceback.format_exc())
+    finally:
+        pending.release()
+
 
 def enrich_child(json_dict_list):
     global GLOBAL_TOTAL_COUNT
@@ -442,8 +463,8 @@ def enrich_child(json_dict_list):
         for json_dict in json_dict_list:
             print(json.dumps(json_dict))
         sys.stdout.flush()
+    GLOBAL_TOTAL_COUNT += 1  # under GLOBAL_OUTPUT_LOCK, many workers update it
     GLOBAL_OUTPUT_LOCK.release()
-    GLOBAL_TOTAL_COUNT += 1
     return json_dict_list
 
 def ext_ip(json_dict_list):
@@ -638,6 +659,8 @@ def main(argv):
     global DEF_EXTIP_DNSNAME
     global DEF_ACQUIRE_INTERVAL
     global DEF_ENR_SPLIT
+    global DEF_ENR_WORKERS
+    global DEF_ENR_MAX_PENDING
     global DEF_TIMEOUT
     global DEF_USER
     global DEF_GROUP
@@ -711,31 +734,37 @@ def main(argv):
             elif 'Table' in value_list:
                 value = value_list
 
-            if key in "enr_timeout":
+            if key == "enr_timeout":
                 DEF_TIMEOUT = int(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "acquire_interval":
+            if key == "acquire_interval":
                 DEF_ACQUIRE_INTERVAL = int(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "dns_server":
+            if key == "dns_server":
                 DEF_DNS_SERVER = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "extip_dnsname":
+            if key == "extip_dnsname":
                 DEF_EXTIP_DNSNAME = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "enr_split_hd_lines":
+            if key == "enr_workers":
+                DEF_ENR_WORKERS = max(1, int(value))
+                eprint("\t" + key + " = " + str(value))
+            if key == "enr_max_pending":
+                DEF_ENR_MAX_PENDING = max(1, int(value))
+                eprint("\t" + key + " = " + str(value))
+            if key == "enr_split_hd_lines":
                 DEF_ENR_SPLIT = int(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "madcatlog_fifo":
+            if key == "madcatlog_fifo":
                 DEF_MADCATLOG_FIFO = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "user":
+            if key == "user":
                 DEF_USER = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "group":
+            if key == "group":
                 DEF_GROUP = str(value)
                 eprint("\t" + key + " = " + str(value))
-            if key in "enr_output_files": #value is a parsed Lua-Table!
+            if key == "enr_output_files": #value is a parsed Lua-Table!
                     DEF_OUTPUT_FILES = list()
                     GLOBAL_OUTPUT_STDOUT = False #if configured, set STDOUT output to false
                     try:
@@ -755,7 +784,7 @@ def main(argv):
                         DEF_OUTPUT_FILES = None
                         GLOBAL_OUTPUT_FILES = False
                         GLOBAL_OUTPUT_STDOUT = True
-            if key in "enr_ip_server_backend":
+            if key == "enr_ip_server_backend":
                 ip_server_client_configured = True
                 if GLOBAL_IP_SERVER_CLIENT_PRESENT:
                     DEF_IP_SERVER_HOST = str(value)
