@@ -70,6 +70,21 @@ long double time_str(char* unix_buf, int unix_size, char* readable_buf, int read
 void get_user_ids(struct user_t* user);
 
 /**
+  * \brief Drops root priviliges
+  *
+  *     If running as root, drops supplementary groups, GID and UID to those of the given user
+  *     and verifies that root can not be regained. Exits the process if dropping fails.
+  *     If the configured user is root itself, a warning is printed and nothing is dropped.
+  *
+  * \param user struct user_t containing the user name to drop to
+  * \param entity name of the calling entity, used as log prefix
+  * \param silent suppress log output if true
+  * \return void
+  *
+  */
+void drop_root_privs(struct user_t user, const char* entity, bool silent);
+
+/**
   * \brief Prints binary data as hex with offset
   *
   *     Prints binary data as hex with offset in hexdump-style w/o ASCII to output.

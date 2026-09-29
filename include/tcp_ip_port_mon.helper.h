@@ -142,19 +142,6 @@ void print_help_tcp(char* progname); //print TCP help message
  */
 int init_pcap(char* dev, char* dev_addr, pcap_t **handle, char* pcap_filter_str);
 
-/**
- * \brief Drops root priviliges
- *
- *     Trys to drop root privilges to a specific user and
- *     prints result to STDERR, if silent is set to false.
- *
- * \param user User to drop the priviliges to
- * \param entity String for output to identify e.g. the Thread which droped priviliges
- * \param silent Turns silent mode on if set to true, thus dropping priviliges silently
- * \return void
- *
- */
-void drop_root_privs(struct user_t user, const char* entity, bool silent);
 //Signal Handler:
 
 /**

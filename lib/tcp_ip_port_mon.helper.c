@@ -129,22 +129,6 @@ int init_pcap(char* dev, char* dev_addr, pcap_t **handle, char* pcap_filter_str)
     return 0;
 }
 
-void drop_root_privs(struct user_t user, const char* entity, bool silent) // if process is running as root, drop privileges
-{
-    if (getuid() == 0) {
-        if (!silent) fprintf(stderr, "%s droping priviliges to user %s...", entity, user.name);
-        get_user_ids(&user); //Get traget user UDI + GID
-        CHECK(setgid(user.gid), == 0); // Drop GID first for security reasons!
-        CHECK(setuid(user.uid), == 0);
-        if (getuid() == 0 || getgid() == 0) { //Test if uid/gid is still 0
-            if (!silent) fprintf(stderr, "...nothing to drop. WARNING: Running as root!\n");
-        } else {
-            if (!silent) fprintf(stderr,"SUCCESS. UID: %d\n", getuid());
-        }
-    }
-    return;
-}
-
 //Handler
 
 //Signal handler helper functioin with common frees, etc. for parents and childs

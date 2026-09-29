@@ -77,22 +77,6 @@ void sig_handler_raw(int signo)
     return;
 }
 
-void drop_root_privs(struct user_t user, const char* entity) // if process is running as root, drop privileges
-{
-    if (getuid() == 0) {
-        fprintf(stderr, "%s droping priviliges to user %s...", entity, user.name);
-        get_user_ids(&user); //Get traget user UDI + GID
-        CHECK(setgid(user.gid), == 0); // Drop GID first for security reasons!
-        CHECK(setuid(user.uid), == 0);
-        if (getuid() == 0 || getgid() == 0) //Test if uid/gid is still 0
-            fprintf(stderr, "...nothing to drop. WARNING: Running as root!\n");
-        else
-            fprintf(stderr,"SUCCESS. UID: %d\n", getuid());
-        fflush(stderr);
-    }
-    return;
-}
-
 int init_pcap(char* dev, pcap_t **handle, const char* filter_exp)
 {
     char log_time[64] = ""; //Human readable start time (actual time zone)

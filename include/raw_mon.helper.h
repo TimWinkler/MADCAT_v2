@@ -71,18 +71,6 @@ void sig_handler_raw(int signo);
   */
 void sig_handler_raw_childs(int signo);
 
-/**
- * \brief Drops root priviliges
- *
- *     Trys to drop root privilges to a specific user and
- *     prints result to STDERR
- *
- * \param user User to drop the priviliges to
- * \param entity String for output to identify e.g. the Thread which droped priviliges
- * \return void
- *
- */
-void drop_root_privs(struct user_t user, const char* entity);
 
 /**
  * \brief Initializes PCAP sniffing with filter

@@ -96,10 +96,44 @@ void get_user_ids(struct user_t* user) //adapted example code from manpage getpw
     }
 
     CHECK(getpwnam_r(user->name, &pwd, buf, bufsize, &result), == 0);
+    if (result == NULL) { //getpwnam_r returns 0 and sets result to NULL if the user does not exist
+        fprintf(stderr, "ERROR: User \"%s\" not found, can not drop priviliges. Exiting.\n", user->name);
+        free(buf);
+        exit(EXIT_FAILURE);
+    }
 
     user->uid = pwd.pw_uid;
     user->gid = pwd.pw_gid;
     free(buf);
+    return;
+}
+
+void drop_root_privs(struct user_t user, const char* entity, bool silent) // if process is running as root, drop privileges
+{
+    if (getuid() != 0 && geteuid() != 0)
+        return;
+
+    if (!silent) fprintf(stderr, "%s droping priviliges to user %s...", entity, user.name);
+    get_user_ids(&user); //Get traget user UDI + GID
+    if (user.uid == 0) { //Configured user is root, so there is nothing to drop
+        if (!silent) fprintf(stderr, "...nothing to drop. WARNING: Running as root!\n");
+        fflush(stderr);
+        return;
+    }
+
+    //Order matters: supplementary groups and GID have to be dropped while still being root.
+    //Without setgroups() the process would keep root's supplementary groups (e.g. GID 0).
+    if (setgroups(0, NULL) != 0 || setgid(user.gid) != 0 || setuid(user.uid) != 0) {
+        fprintf(stderr, "...FAILED: %s. Exiting.\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    //Verify: no way back to root and no root group left
+    if (getuid() == 0 || geteuid() == 0 || getgid() == 0 || getegid() == 0 || getgroups(0, NULL) != 0 || setuid(0) != -1) {
+        fprintf(stderr, "...FAILED: still privileged after drop. Exiting.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (!silent) fprintf(stderr, "SUCCESS. UID: %d\n", getuid());
+    fflush(stderr);
     return;
 }
 

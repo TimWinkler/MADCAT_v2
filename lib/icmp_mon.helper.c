@@ -69,7 +69,7 @@ void sig_handler_icmp(int signo)
     fprintf(stderr, "\n%s Received Signal %s, shutting down...\n", stop_time, strsignal(signo));
     // Free
     free(saved_buffer(0));
-    dict_free(json_dict("false"));
+    dict_free(json_dict(false));
     //exit parent process
     exit(signo);
     return;

@@ -6,7 +6,7 @@ Status markers: `[ ]` open, `[x]` done.
 
 ## 0. Security
 
-- [ ] **Privilege drop keeps supplementary group root (verified at runtime).**
+- [x] **Privilege drop keeps supplementary group root (verified at runtime).**
   The C sensors call `setgid()` + `setuid()` but never `setgroups()`, so after the drop the sniffer and
   listener run as `Uid: 999` but still with `Groups: 0` (checked via `/proc/<pid>/status`). Processes that
   parse attacker-controlled packets keep root-group file access. Call `setgroups(0, NULL)` (or
@@ -14,7 +14,7 @@ Status markers: `[ ]` open, `[x]` done.
   Code: `drop_root_privs` in [lib/tcp_ip_port_mon.helper.c](lib/tcp_ip_port_mon.helper.c), inline drops in
   [bin/udp_ip_port_mon.c](bin/udp_ip_port_mon.c) and [bin/icmp_mon.c](bin/icmp_mon.c), and raw_mon.
 
-- [ ] **Deduplicate the privilege-drop code.**
+- [x] **Deduplicate the privilege-drop code.**
   There are at least three copies (TCP helper, UDP and ICMP mains). Move a single, correct implementation
   into [lib/madcat.helper.c](lib/madcat.helper.c) and use it everywhere.
 
@@ -40,7 +40,7 @@ Status markers: `[ ]` open, `[x]` done.
   the postprocessor reads `header_fifo` / `connection_fifo` from `config.lua`. Changing only the config
   silently breaks the pipeline. Make the C side read the same config keys (keeping the defines as defaults).
 
-- [ ] **`json_dict("false")` resets instead of reading the global JSON dict.**
+- [x] **`json_dict("false")` resets instead of reading the global JSON dict.**
   The string literal `"false"` converts to `bool true`, so `json_dict` frees and recreates the global dict,
   and the following `dict_free` then leaves the static pointer dangling. Harmless today only because the
   process exits right after. Should be `dict_free(json_dict(false))`.

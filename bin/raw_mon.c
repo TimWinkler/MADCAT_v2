@@ -135,7 +135,7 @@ int main(int argc, char *argv[])
     CHECK(init_pcap(interface, &handle, filter_exp), == 0); //Init libpcap
 
     fprintf(stderr, "%s [PID %d] ", log_time, getpid());
-    drop_root_privs(user, "Sniffer"); //drop priviliges
+    drop_root_privs(user, "Sniffer", false); //drop priviliges
 
     struct json_data_node_t json_data; //JSON Data structure for output generation
     //Link (POINTERS!!!) timestamp(s) in JSON Data Structure to timestamp variables (multiple times to match the data model of other modules)
