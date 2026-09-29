@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev python3-pip \
     conntrack \
     auditd audispd-plugins \
-    net-tools iproute2 iptables sudo \
+    net-tools iproute2 iptables sudo openssh-client \
     gdb strace valgrind \
     hping3 nmap netcat-openbsd tcpdump python3-scapy \
     && rm -rf /var/lib/apt/lists/*
