@@ -1,0 +1,33 @@
+{
+  "name": "MADCAT v2",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  // The sensors open raw/packet sockets (libpcap, ICMP/raw modules) and the
+  // example setup uses iptables DNAT, so the container needs these two caps.
+  // Default bridge networking is enough to play with the binaries against
+  // loopback/veth traffic; switch to "--network=host" if you need it to see
+  // real host-interface traffic.
+  // SYS_PTRACE lets gdb/strace attach to running (hung) sensor processes.
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW",
+    "--cap-add=SYS_PTRACE"
+  ],
+  "remoteUser": "vscode",
+  // Default build: debug + unit tests, using stock gcc (verified to build clean).
+  // The MADCAT_FUZZ target needs clang (gcc's -fsanitize=fuzzer-no-link support is
+  // incomplete on Ubuntu 24.04's gcc 13), so build it separately, e.g.:
+  //   CC=clang CXX=clang++ cmake -Bbuild-fuzz -DCMAKE_FUZZ=ON -DCMAKE_DEBUG=ON && cmake --build build-fuzz
+  "postCreateCommand": "cmake -Bbuild -DCMAKE_TESTS=ON -DCMAKE_DEBUG=ON && cmake --build build -j$(nproc) && ctest --test-dir build --output-on-failure",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-python.python",
+        "sumneko.lua"
+      ]
+    }
+  }
+}
