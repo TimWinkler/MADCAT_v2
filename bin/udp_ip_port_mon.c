@@ -217,16 +217,9 @@ int main(int argc, char *argv[])
             run_as_root = true;
         }
     }
-    if (getuid() == 0 && !run_as_root) {
-        fprintf(stderr, "%s Droping priviliges to user %s...", log_time, user.name);
-        get_user_ids(&user); //Get traget user UDI + GID
-        CHECK(setgid(user.gid), == 0); // Drop GID first for security reasons!
-        CHECK(setuid(user.uid), == 0);
-        if (getuid() == 0 || getgid() == 0) //Test if uid/gid is still 0
-            fprintf(stderr, "...nothing to drop. WARNING: Running as root!\n");
-        else
-            fprintf(stderr,"SUCCESS. UID: %d\n", getuid());
-        fflush(stderr);
+    if (!run_as_root) {
+        fprintf(stderr, "%s ", log_time);
+        drop_root_privs(user, "UDP-Monitor:", false);
     }
 
     //Initialize address struct (Host)

@@ -145,17 +145,8 @@ int main(int argc, char *argv[])
     unsigned char* buffer = 0;
     int listenfd = CHECK(socket(AF_INET, SOCK_RAW, IPPROTO_ICMP), != -1); //create socket filedescriptor
     // if process is running as root, drop privileges
-    if (getuid() == 0) {
-        fprintf(stderr, "%s Droping priviliges to user %s...", log_time, user.name);
-        get_user_ids(&user); //Get traget user UDI + GID
-        CHECK(setgid(user.gid), == 0); // Drop GID first for security reasons!
-        CHECK(setuid(user.uid), == 0);
-        if (getuid() == 0 || getgid() == 0) //Test if uid/gid is still 0
-            fprintf(stderr, "...nothing to drop. WARNING: Running as root!\n");
-        else
-            fprintf(stderr,"SUCCESS. UID: %d\n", getuid());
-        fflush(stderr);
-    }
+    fprintf(stderr, "%s ", log_time);
+    drop_root_privs(user, "ICMP-Monitor:", false);
 
     //Initialize address struct (Host)
     bzero(&addr, addr_len);

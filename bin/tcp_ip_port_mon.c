@@ -376,7 +376,7 @@ int main(int argc, char *argv[])
 #endif
                 //Shutdown child process
                 close(openfd); //Close connection
-                dict_free(json_dict("false"));
+                dict_free(json_dict(false));
                 pctcp_free_list(pc->portlist);
 #if DEBUG >= 2
                 fprintf(stderr, "*** DEBUG [PID %d] Accept-Child openfd closed, returning.\n", getpid());

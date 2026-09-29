@@ -68,6 +68,7 @@ Features enabled by compiler options are not overridden by feature test macros
 #include <sys/time.h>
 #include <time.h>
 #include <pwd.h>
+#include <grp.h>
 #include <stdbool.h>
 #include <stdarg.h>
 #include <sys/file.h>
