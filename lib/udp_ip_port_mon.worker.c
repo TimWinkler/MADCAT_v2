@@ -114,25 +114,25 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
             uc_con->proxied = true;
 
             //Fill udpcon node structure with data
-            uc_con->src_ip = strncpy(malloc(strlen(ipv4udp.src_ip_str ) +2 ), ipv4udp.src_ip_str, strlen(ipv4udp.src_ip_str) +1 );
+            uc_con->src_ip = CHECK(strdup(ipv4udp.src_ip_str), != NULL);
             uc_con->src_port = ipv4udp.src_port;
-            uc_con->dest_ip =  strncpy(malloc(strlen(ipv4udp.dest_ip_str ) +2 ), ipv4udp.dest_ip_str, strlen(ipv4udp.dest_ip_str) +1 );
+            uc_con->dest_ip =  CHECK(strdup(ipv4udp.dest_ip_str), != NULL);
             uc_con->dest_port =  ipv4udp.dest_port;
-            uc_con->timestamp =  strncpy(malloc(strlen(log_time ) +2 ), log_time, strlen(log_time) +1 );
+            uc_con->timestamp =  CHECK(strdup(log_time), != NULL);
             uc_con->unixtime =  atoll(log_time_unix);
-            uc_con->start =  strncpy(malloc(strlen(log_time) +2 ), log_time_unix, strlen(log_time) +1 );
-            uc_con->end =  strncpy(malloc(strlen(log_time) +2 ), log_time_unix, strlen(log_time) +1 );
+            uc_con->start =  CHECK(strdup(log_time), != NULL);
+            uc_con->end =  CHECK(strdup(log_time), != NULL);
             uc_con->timeasdouble = unix_timeasdouble;
             uc_con->duration = 0;
             uc_con->last_seen =  atoll(log_time_unix);
             uc_con->min_rtt = 0;
             uc_con->bytes_toserver =  ipv4udp.data_len;
             uc_con->bytes_toclient =  0;
-            uc_con->first_dgram = malloc(recv_len);
+            uc_con->first_dgram = CHECK(malloc(recv_len), != NULL);
             memcpy(uc_con->first_dgram, buffer, recv_len);
-            uc_con->first_dgram_len = ipv4udp.data_len;
+            uc_con->first_dgram_len = recv_len;
 
-            uc_con->backend_ip =  strncpy(malloc(strlen(pc_con->backendaddr) +2 ), pc_con->backendaddr, strlen(pc_con->backendaddr) +1 );
+            uc_con->backend_ip =  CHECK(strdup(pc_con->backendaddr), != NULL);
             uc_con->backend_port =  pc_con->backendport;
 
 #if DEBUG >= 2
@@ -140,12 +140,14 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
 #endif
 
             //Make socket towards backend
-            uc_con->backend_socket = (struct sockaddr_in*) malloc(sizeof(struct sockaddr_in));
+            uc_con->backend_socket = (struct sockaddr_in*) CHECK(malloc(sizeof(struct sockaddr_in)), != NULL);
             if ( (uc_con->backend_socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0 ) {
-#if DEBUG >= 2
-                fprintf(stderr, "****DEBUG: Proxy backend socket creation failed");
-#endif
-                exit(1);
+                fprintf(stderr, "%s ERROR: Proxy backend socket creation failed: %s. Dropping datagram.\n", log_time, strerror(errno));
+                uc_con->backend_socket_fd = 0; //nothing to close in uc_del
+                uc_del(uc, id);
+                free(ipv4udp.src_ip_str);
+                free(ipv4udp.dest_ip_str);
+                return -1;
             }
             memset(uc_con->backend_socket, 0, sizeof(struct sockaddr_in));
 
@@ -166,7 +168,7 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
             getsockname(uc_con->backend_socket_fd, &local_address, &addr_size);
             char* port_ptr = local_address.sa_data;
 
-            uc_con->proxy_ip =  strncpy(malloc(strlen(pc->proxy_ip) + 2 ), pc->proxy_ip, strlen(pc->proxy_ip) +1 );
+            uc_con->proxy_ip =  CHECK(strdup(pc->proxy_ip), != NULL);
             uc_con->proxy_port = (uint16_t) (uint16_t) ((uint8_t) (*port_ptr)) * 256 + ((uint8_t) (*(port_ptr+1)));
 
 #if DEBUG >= 2
@@ -181,12 +183,14 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
             uc_con->proxy_ip, uc_con->proxy_port, uc_con->backend_ip, uc_con->backend_port, uc_con->id_tobackend.str);
 #endif
             //Make socket towards client
-            uc_con->client_socket = (struct sockaddr_in*) malloc(sizeof(struct sockaddr_in));
+            uc_con->client_socket = (struct sockaddr_in*) CHECK(malloc(sizeof(struct sockaddr_in)), != NULL);
             if ( (uc_con->client_socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0 ) {
-#if DEBUG >= 2
-                fprintf(stderr, "****DEBUG: Proxy client socket creation failed\n");
-#endif
-                exit(1);
+                fprintf(stderr, "%s ERROR: Proxy client socket creation failed: %s. Dropping datagram.\n", log_time, strerror(errno));
+                uc_con->client_socket_fd = 0; //nothing to close in uc_del
+                uc_del(uc, id);
+                free(ipv4udp.src_ip_str);
+                free(ipv4udp.dest_ip_str);
+                return -1;
             }
             memset(uc_con->client_socket, 0, sizeof(struct sockaddr_in));
 
@@ -207,7 +211,14 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
             uc_con->duration = time_str(NULL, 0, NULL, 0) - uc_con->unixtime;
         } else { //if proxied and connection exists...
             //fprintf(stderr, "Proxy connection exists\n");
-            if (uc_eqlid(&(uc_con->id_fromclient), &id)) { //...and connections comes from client, forward it to backend
+            //Decide direction by the real source socket, not by the (direction independent) connection ID:
+            //if the backend is local, the raw socket also sees our own proxy->backend and proxy->client packets,
+            //which would otherwise be reflected back to the client.
+            bool from_client = uc_eqlid(&(uc_con->id_fromclient), &id) &&
+                               strcmp(ipv4udp.src_ip_str, uc_con->src_ip) == 0 && ipv4udp.src_port == uc_con->src_port;
+            bool from_backend = uc_eqlid(&(uc_con->id_tobackend), &id) &&
+                                strcmp(ipv4udp.src_ip_str, uc_con->backend_ip) == 0 && ipv4udp.src_port == uc_con->backend_port;
+            if (from_client) { //...and connections comes from client, forward it to backend
 #if DEBUG >= 2
                 fprintf(stderr, "***DEBUG: Connection from client\n");
 #endif
@@ -224,7 +235,7 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
                     fprintf(stderr, "****DEBUG: min_rtt: %Lf\n", uc_con->min_rtt);
 #endif
                 }
-            } else if (uc_eqlid(&(uc_con->id_tobackend), &id)) { //...and connections comes from backend, forward it to client
+            } else if (from_backend) { //...and connections comes from backend, forward it to client
                 //fprintf(stderr, "Connection from backend\n");
                 //Send received data to client via client-socket:
                 sendto(uc_con->client_socket_fd, ipv4udp.data, ipv4udp.data_len,
@@ -238,12 +249,13 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
 #endif
             }
 
-
-            if(uc_con->end != NULL) free(uc_con->end);
-            unix_timeasdouble = time_str(log_time_unix, sizeof(log_time_unix), log_time, sizeof(log_time)); //...generate string with current time
-            uc_con->end =  strncpy(malloc(strlen(log_time ) +2 ), log_time_unix, strlen(log_time) +1 );
-            uc_con->last_seen =  atoll(log_time_unix);
-            uc_con->duration =  unix_timeasdouble - uc_con->timeasdouble;
+            if (from_client || from_backend) { //own packets seen on a local interface must not keep the connection alive
+                if(uc_con->end != NULL) free(uc_con->end);
+                unix_timeasdouble = time_str(log_time_unix, sizeof(log_time_unix), log_time, sizeof(log_time)); //...generate string with current time
+                uc_con->end =  CHECK(strdup(log_time), != NULL);
+                uc_con->last_seen =  atoll(log_time_unix);
+                uc_con->duration =  unix_timeasdouble - uc_con->timeasdouble;
+            }
         }
 
     } else { //if destination port is not configured for proxy, save the content of the datagram in a file
@@ -261,21 +273,21 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
             uc_con->proxied = false;
 
             //Fill udpcon node structure with data
-            uc_con->src_ip = strncpy(malloc(strlen(ipv4udp.src_ip_str ) +2 ), ipv4udp.src_ip_str, strlen(ipv4udp.src_ip_str) +1 );
+            uc_con->src_ip = CHECK(strdup(ipv4udp.src_ip_str), != NULL);
             uc_con->src_port = ipv4udp.src_port;
-            uc_con->dest_ip =  strncpy(malloc(strlen(ipv4udp.dest_ip_str ) +2 ), ipv4udp.dest_ip_str, strlen(ipv4udp.dest_ip_str) +1 );
+            uc_con->dest_ip =  CHECK(strdup(ipv4udp.dest_ip_str), != NULL);
             uc_con->dest_port =  ipv4udp.dest_port;
-            uc_con->timestamp =  strncpy(malloc(strlen(log_time) +2 ), log_time, strlen(log_time) +1 );
+            uc_con->timestamp =  CHECK(strdup(log_time), != NULL);
             uc_con->unixtime =  atoll(log_time_unix);
-            uc_con->start =  strncpy(malloc(strlen(log_time ) +2 ), log_time, strlen(log_time) +1 );
-            uc_con->end =  strncpy(malloc(strlen(log_time) +2 ), log_time, strlen(log_time) +1 );
+            uc_con->start =  CHECK(strdup(log_time), != NULL);
+            uc_con->end =  CHECK(strdup(log_time), != NULL);
             uc_con->last_seen =  atoll(log_time_unix);
             uc_con->duration = 0;
             uc_con->min_rtt = 0;
             uc_con->timeasdouble = unix_timeasdouble;
 
             //first_dgram contains whole packet for header anaylization
-            uc_con->first_dgram = malloc(recv_len);
+            uc_con->first_dgram = CHECK(malloc(recv_len), != NULL);
             memcpy(uc_con->first_dgram, buffer, recv_len);
             uc_con->first_dgram_len = recv_len;
         }
@@ -283,14 +295,14 @@ int worker_udp(unsigned char* buffer, int recv_len, char* hostaddress, char* dat
 #if DEBUG >= 2
         fprintf(stderr,"\n*****DEBUG: Append %lld -> %lld\n\n", uc_con->payload_len, uc_con->payload_len + ipv4udp.data_len);
 #endif
-        uc_con->payload = realloc(uc_con->payload, uc_con->payload_len + ipv4udp.data_len);
+        uc_con->payload = CHECK(realloc(uc_con->payload, uc_con->payload_len + ipv4udp.data_len), != NULL);
         memcpy(uc_con->payload + uc_con->payload_len, ipv4udp.data, ipv4udp.data_len);
         uc_con->payload_len += ipv4udp.data_len;
         uc_con->bytes_toserver +=  ipv4udp.data_len;
 
         if(uc_con->end != NULL) free(uc_con->end);
         unix_timeasdouble = time_str(log_time_unix, sizeof(log_time_unix), log_time, sizeof(log_time)); //...generate string with current time
-        uc_con->end =  strncpy(malloc(strlen(log_time) +2 ), log_time, strlen(log_time) +1 );
+        uc_con->end =  CHECK(strdup(log_time), != NULL);
         if (!new_con && (uc_con->min_rtt == 0 || unix_timeasdouble - uc_con->last_seen < uc_con->min_rtt) ) {
             uc_con->min_rtt = unix_timeasdouble - uc_con->last_seen;
 #if DEBUG >= 2

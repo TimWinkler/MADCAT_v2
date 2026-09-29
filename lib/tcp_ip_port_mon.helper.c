@@ -48,6 +48,8 @@ int listner_pid; //PID of the Child doing the TCP Connection handling. Globally 
 sem_t *hdrsem; //Semaphore for named pipe containing TCP/IP data
 sem_t *consem; //Semaphore for named pipe containing connection data
 FILE* confifo; //FILE* confifo is globally defined to be reachabel for proxy-childs and listner-childs and signal handlers
+char header_fifo_path[PATH_LEN] = HEADER_FIFO; //configurable via "header_fifo"
+char connection_fifo_path[PATH_LEN] = CONNECT_FIFO; //configurable via "connection_fifo"
 FILE* hdrfifo; //FILE* confifo is globally defined to be reachabel for pcap-childs and signal handlers
 int openfd; //Socket FD is globally defined to be reachabel for listner-childs and signal handlers
 pcap_t *handle; //pcap Session handle

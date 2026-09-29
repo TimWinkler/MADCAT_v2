@@ -140,6 +140,18 @@ int main(int argc, char *argv[])
         }
         fprintf(stderr, "\tFailed proxy restart time: %lf\n", proxy_wait_restart);
 
+        if(get_config_opt(luaState, "header_fifo") != EMPTY_STR) { //optional, must match TCP postprocessor configuration
+            strncpy(header_fifo_path, get_config_opt(luaState, "header_fifo"), PATH_LEN);
+            header_fifo_path[PATH_LEN-1] = 0;
+        }
+        fprintf(stderr, "\theader_fifo: %s\n", header_fifo_path);
+
+        if(get_config_opt(luaState, "connection_fifo") != EMPTY_STR) { //optional, must match TCP postprocessor configuration
+            strncpy(connection_fifo_path, get_config_opt(luaState, "connection_fifo"), PATH_LEN);
+            connection_fifo_path[PATH_LEN-1] = 0;
+        }
+        fprintf(stderr, "\tconnection_fifo: %s\n", connection_fifo_path);
+
         get_config_table(luaState, "tcpproxy", pc);
         pctcp_print(pc);
 
@@ -188,15 +200,17 @@ int main(int argc, char *argv[])
     pcap_pid = 0; //PID of the Child doing the PCAP-Sniffing. Globally defined, cause it's used in CHECK-Makro callback function.
     listner_pid = 0; //PID of the Child doing the TCP Connection handling. Globally defined, cause it's used in CHECK-Makro callback function.
     //Make FIFO for connection discribing JSON Output
-    unlink(CONNECT_FIFO);
-    CHECK(mkfifo(CONNECT_FIFO, 0666), == 0);
-    confifo = fopen(CONNECT_FIFO, "a+"); //FILE* confifo is globally defined to be reachabel for both proxy-childs and accept-childs
-    fprintf(stderr, "%s [PID %d] FIFO for connection json: %s\n", log_time, getpid(), CONNECT_FIFO);
+    unlink(connection_fifo_path);
+    CHECK(mkfifo(connection_fifo_path, 0666), == 0);
+    confifo = CHECK(fopen(connection_fifo_path, "a+"), != NULL); //FILE* confifo is globally defined to be reachabel for both proxy-childs and accept-childs
+    CHECK(fifo_prepare(confifo), == 0); //non-blocking writes, so a missing reader can not stall the sensor
+    fprintf(stderr, "%s [PID %d] FIFO for connection json: %s\n", log_time, getpid(), connection_fifo_path);
     //Make FIFO for header discribing JSON Output
-    unlink(HEADER_FIFO);
-    CHECK(mkfifo(HEADER_FIFO, 0666), == 0);
-    hdrfifo = fopen(HEADER_FIFO, "a+");
-    fprintf(stderr, "%s [PID %d] FIFO for header JSON: %s\n", log_time, getpid(), HEADER_FIFO);
+    unlink(header_fifo_path);
+    CHECK(mkfifo(header_fifo_path, 0666), == 0);
+    hdrfifo = CHECK(fopen(header_fifo_path, "a+"), != NULL);
+    CHECK(fifo_prepare(hdrfifo), == 0);
+    fprintf(stderr, "%s [PID %d] FIFO for header JSON: %s\n", log_time, getpid(), header_fifo_path);
 
     /*********************************************************************************************************
      * Start proxys.
@@ -272,8 +286,7 @@ int main(int argc, char *argv[])
             char* output = dict_dumpstr(json_dict(false));
             if(strlen(output) > 2) { //do not print empty JSON-Objects
                 sem_timedwait(hdrsem, &sem_timeout); //Acquire lock for output
-                fprintf(hdrfifo, "%s\n", output); //print json output for further analysis
-                fflush(hdrfifo);
+                fifo_writeline(hdrfifo, output, FIFO_WRITE_TIMEOUT_MS); //print json output for further analysis
                 sem_post(hdrsem); //release lock
                 fprintf(stdout,"{\"HEADER\": %s}\n", output); //print json output for logging
                 fflush(stdout);
@@ -322,7 +335,7 @@ int main(int argc, char *argv[])
 
         //Bind socket and begin listening
         CHECK(bind(listenfd, (struct sockaddr*)&addr, sizeof(addr)), != -1);
-        CHECK(listen(listenfd, 5), != -1);
+        CHECK(listen(listenfd, SOMAXCONN), != -1); //large backlog, scans produce bursts of connections
 
         //drop root priviliges
         fprintf(stderr, "%s [PID %d] ", log_time, getpid());
@@ -381,7 +394,6 @@ int main(int argc, char *argv[])
 #if DEBUG >= 2
                 fprintf(stderr, "*** DEBUG [PID %d] Accept-Child openfd closed, returning.\n", getpid());
 #endif
-                fflush(confifo);
                 kill(getpid(), SIGKILL); //kill child process //exit may hang when used in forged child processes, thus using SIGKILL instead.; //exit(signo); //hangs sometimes under  high load>
                 _exit(0);
             }
@@ -405,8 +417,6 @@ int main(int argc, char *argv[])
         // Parent Watchdog Loop.
         int stat_pcap = 0;
         int stat_accept = 0;
-        int sem_sval_1 = 0;
-        int sem_sval_2 = 0;
         bool firstrun = true;
         while (1) {
             gettimeofday(&begin, NULL);
@@ -457,29 +467,9 @@ int main(int argc, char *argv[])
             }
 
 
-            /*
-            If one or more processes or threads are blocked waiting to lock the semaphore with sem_wait(3),
-            POSIX.1-2001 permits two possibilities for the value returned in sval:
-            either 0 is returned; or a negative number whose absolute value is the count of the number of processes and threads
-            currently blocked in sem_wait(3).
-            Linux adopts the former behavior.
-            */
-            //For connection semaphore:
-            sem_getvalue(consem, &sem_sval_1); //Look up number of processes waiting
-            if(sem_sval_1 < 0) { //Test if processe(s) are waiting
-                usleep(20); // needs integer use usleep
-                sem_getvalue(consem, &sem_sval_2); //Look up again after 0.02 sec.
-                if (sem_sval_2 <= sem_sval_1) //Test if Number of processes stayed the same or growed
-                    sem_post(consem); //If so, assume a deadlock situation happend and release one lock
-            }
-            //For header semaphore:
-            sem_getvalue(hdrsem, &sem_sval_1); //Look up number of processes waiting
-            if(sem_sval_1 < 0) { //Test if processe(s) are waiting
-                usleep(20); // needs integer
-                sem_getvalue(hdrsem, &sem_sval_2); //Look up again after 0.02 sec.
-                if (sem_sval_2 <= sem_sval_1) //Test if Number of processes stayed the same or growed
-                    sem_post(hdrsem); //If so, assume a deadlock situation happend and release one lock
-            }
+            //No semaphore "deadlock breaker" here: Linux never reports waiters via sem_getvalue(),
+            //so such a check can not work. Writers use sem_timedwait() with a 1s timeout and
+            //fifo_writeline() with FIFO_WRITE_TIMEOUT_MS instead, so a stuck lock only delays output.
 
             firstrun = false;
             sleep(2); //Watch for childs every 2 seconds.
