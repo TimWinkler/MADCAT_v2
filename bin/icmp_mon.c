@@ -147,6 +147,7 @@ int main(int argc, char *argv[])
     // if process is running as root, drop privileges
     fprintf(stderr, "%s ", log_time);
     drop_root_privs(user, "ICMP-Monitor:", false);
+    fifo_prepare(stdout); //stdout is usually redirected to the enrichment FIFO: write non-blocking with timeout
 
     //Initialize address struct (Host)
     bzero(&addr, addr_len);
@@ -164,8 +165,7 @@ int main(int argc, char *argv[])
         //print JSON output for logging and further analysis, if JSON-Object is not empty (happens if e.g. UDP is seen by ICMP Raw Socket)
         char* output = dict_dumpstr(json_dict(false));
         if(strlen(output) > 2) {
-            fprintf(stdout,"%s\n", output);
-            fflush(stdout);
+            fifo_writeline(stdout, output, FIFO_WRITE_TIMEOUT_MS); //stdout usually is the enrichment FIFO, never block on it
         }
         free(output);
     }

@@ -549,8 +549,7 @@ void json_out(struct udpcon_data_node_t* uc_node)
     //print JSON Object to stdout for logging
     char* output = dict_dumpstr(json_dict(false));
         if(strlen(output) > 2) { //do not print empty JSON-Objects
-            fprintf(stdout,"%s\n", output);
-            fflush(stdout);
+            fifo_writeline(stdout, output, FIFO_WRITE_TIMEOUT_MS); //stdout usually is the enrichment FIFO, never block on it
         }
     free(output);
 

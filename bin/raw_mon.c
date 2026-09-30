@@ -136,6 +136,7 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "%s [PID %d] ", log_time, getpid());
     drop_root_privs(user, "Sniffer", false); //drop priviliges
+    fifo_prepare(stdout); //stdout is usually redirected to the enrichment FIFO: write non-blocking with timeout
 
     struct json_data_node_t json_data; //JSON Data structure for output generation
     //Link (POINTERS!!!) timestamp(s) in JSON Data Structure to timestamp variables (multiple times to match the data model of other modules)
@@ -283,8 +284,7 @@ int main(int argc, char *argv[])
         //print JSON Object to stdout for logging
         char* output = dict_dumpstr(json_dict(false));
         if(strlen(output) > 2) { //do not print empty JSON-Objects
-            fprintf(stdout,"%s\n", output);
-            fflush(stdout);
+            fifo_writeline(stdout, output, FIFO_WRITE_TIMEOUT_MS); //stdout usually is the enrichment FIFO, never block on it
         }
         free(output);
 

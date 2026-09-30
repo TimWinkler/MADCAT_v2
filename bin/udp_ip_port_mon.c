@@ -227,6 +227,8 @@ int main(int argc, char *argv[])
     addr.sin_family=AF_INET;
     CHECK(inet_aton(hostaddr, &addr.sin_addr), != 0); //set and check listening address
 
+    fifo_prepare(stdout); //stdout is usually redirected to the enrichment FIFO: write non-blocking with timeout
+
     //Create cleanup thread
     pthread_create(&cleanup_t_id, NULL, cleanup_t, NULL);
 
